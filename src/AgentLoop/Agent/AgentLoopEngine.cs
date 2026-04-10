@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Anthropic;
 using Anthropic.Models.Messages;
 using AgentLoop.Bash;
@@ -8,8 +7,11 @@ namespace AgentLoop.Agent;
 
 public sealed class AgentLoopEngine
 {
+    private const int ToolOutputPreviewLength = 200;
+
     private readonly AnthropicClient _client;
     private readonly IBashRunner _bash;
+    private readonly IToolInvocationObserver _toolObserver;
     private readonly string _modelId;
     private readonly string _systemPrompt;
 
@@ -17,13 +19,15 @@ public sealed class AgentLoopEngine
         AnthropicClient client,
         IBashRunner bash,
         string modelId,
-        string systemPrompt
+        string systemPrompt,
+        IToolInvocationObserver? toolObserver = null
     )
     {
         _client = client;
         _bash = bash;
         _modelId = modelId;
         _systemPrompt = systemPrompt;
+        _toolObserver = toolObserver ?? NoOpToolInvocationObserver.Instance;
     }
 
     public async Task RunAgentLoopAsync(LoopState state, CancellationToken cancellationToken = default)
@@ -33,36 +37,8 @@ public sealed class AgentLoopEngine
 
     public async Task<bool> RunOneTurnAsync(LoopState state, CancellationToken cancellationToken = default)
     {
-        var request = new MessageCreateParams
-        {
-            Model = _modelId,
-            MaxTokens = 8000,
-            System = _systemPrompt,
-            Messages = state.Messages,
-            Tools = [CreateBashTool()],
-        };
-
-        Message response;
-        try
-        {
-            response = await _client
-                .Messages.Create(request, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            throw new AgentLoopException("调用 Anthropic Messages API 失败。", ex);
-        }
-
-        state.Messages.Add(
-            new MessageParam
-            {
-                Role = Role.Assistant,
-                Content = new MessageParamContent(
-                    ContentMapping.MapAssistantBlocksToParams(response.Content)
-                ),
-            }
-        );
+        var response = await CallMessagesApiAsync(state, cancellationToken).ConfigureAwait(false);
+        AppendAssistantMessage(state, response);
 
         if (response.StopReason is not { } sr || sr.Value() != StopReason.ToolUse)
         {
@@ -77,37 +53,44 @@ public sealed class AgentLoopEngine
             return false;
         }
 
-        state.Messages.Add(
-            new MessageParam { Role = Role.User, Content = new MessageParamContent(results) }
-        );
-
+        state.Messages.Add(new MessageParam { Role = Role.User, Content = new MessageParamContent(results) });
         state.TurnCount++;
         state.TransitionReason = "tool_result";
         return true;
     }
 
-    static Tool CreateBashTool() =>
-        new()
+    async Task<Message> CallMessagesApiAsync(LoopState state, CancellationToken cancellationToken)
+    {
+        var request = new MessageCreateParams
         {
-            Name = "bash",
-            Description = "Run a shell command in the current workspace.",
-            InputSchema = CreateBashInputSchema(),
+            Model = _modelId,
+            MaxTokens = 8000,
+            System = _systemPrompt,
+            Messages = state.Messages,
+            Tools = [BashToolDefinition.CreateTool()],
         };
 
-    static InputSchema CreateBashInputSchema()
+        try
+        {
+            return await _client.Messages.Create(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            throw new AgentLoopException("调用 Anthropic Messages API 失败。", ex);
+        }
+    }
+
+    static void AppendAssistantMessage(LoopState state, Message response)
     {
-        var root = JsonSerializer.SerializeToElement(
-            new
+        state.Messages.Add(
+            new MessageParam
             {
-                type = "object",
-                properties = new { command = new { type = "string" } },
-                required = new[] { "command" },
+                Role = Role.Assistant,
+                Content = new MessageParamContent(
+                    ContentMapping.MapAssistantBlocksToParams(response.Content)
+                ),
             }
         );
-        var dict = new Dictionary<string, JsonElement>();
-        foreach (var p in root.EnumerateObject())
-            dict[p.Name] = p.Value;
-        return InputSchema.FromRawUnchecked(dict);
     }
 
     ContentBlockParam[] ExecuteToolCalls(IReadOnlyList<ContentBlock> responseContent)
@@ -125,13 +108,9 @@ public sealed class AgentLoopEngine
             if (string.IsNullOrEmpty(command))
                 throw new AgentLoopException("bash 工具的 command 无效。");
 
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("$ " + command);
-            Console.ResetColor();
-
             var output = _bash.Run(command);
-            var preview = output.Length <= 200 ? output : output[..200];
-            Console.WriteLine(preview);
+            var preview = output.Length <= ToolOutputPreviewLength ? output : output[..ToolOutputPreviewLength];
+            _toolObserver.OnToolInvocation(command, preview);
 
             var tr = new ToolResultBlockParam(tool.ID) { Content = new ToolResultBlockParamContent(output) };
             list.Add(tr);

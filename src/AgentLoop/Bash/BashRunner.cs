@@ -29,64 +29,91 @@ public sealed class BashRunner : IBashRunner
 
     public string Run(string command)
     {
-        foreach (var fragment in DangerousFragments)
-        {
-            if (command.Contains(fragment, StringComparison.Ordinal))
-                return "Error: Dangerous command blocked";
-        }
+        if (ContainsDangerousFragment(command))
+            return "Error: Dangerous command blocked";
 
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                WorkingDirectory = _workingDirectory,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-
-            if (OperatingSystem.IsWindows())
-            {
-                psi.FileName = "cmd.exe";
-                psi.Arguments = "/c " + command;
-            }
-            else
-            {
-                psi.FileName = "/bin/sh";
-                psi.Arguments = "-c " + command;
-            }
-
-            using var proc = Process.Start(psi)
-                ?? throw new AgentLoopException("无法启动 shell 进程。");
-
-            var stdoutTask = Task.Run(() => proc.StandardOutput.ReadToEnd());
-            var stderrTask = Task.Run(() => proc.StandardError.ReadToEnd());
-            if (!proc.WaitForExit(_timeoutSeconds * 1000))
-            {
-                try
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-                catch
-                {
-                    /* ignore */
-                }
-
-                return $"Error: Timeout ({_timeoutSeconds}s)";
-            }
-
-            var output = new StringBuilder();
-            output.Append(stdoutTask.GetAwaiter().GetResult());
-            output.Append(stderrTask.GetAwaiter().GetResult());
-            var text = output.ToString().Trim();
-            if (string.IsNullOrEmpty(text))
-                return "(no output)";
-            return text.Length <= MaxOutputLength ? text : text[..MaxOutputLength];
+            var psi = CreateProcessStartInfo(command);
+            return RunProcessAndCollectOutput(psi);
         }
         catch (Exception ex) when (ex is not AgentLoopException)
         {
             return $"Error: {ex.Message}";
         }
+    }
+
+    static bool ContainsDangerousFragment(string command)
+    {
+        foreach (var fragment in DangerousFragments)
+        {
+            if (command.Contains(fragment, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
+    ProcessStartInfo CreateProcessStartInfo(string command)
+    {
+        var psi = new ProcessStartInfo
+        {
+            WorkingDirectory = _workingDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+
+        if (OperatingSystem.IsWindows())
+        {
+            psi.FileName = "cmd.exe";
+            psi.Arguments = "/c " + command;
+        }
+        else
+        {
+            psi.FileName = "/bin/sh";
+            psi.Arguments = "-c " + command;
+        }
+
+        return psi;
+    }
+
+    string RunProcessAndCollectOutput(ProcessStartInfo psi)
+    {
+        using var proc = Process.Start(psi) ?? throw new AgentLoopException("无法启动 shell 进程。");
+
+        var stdoutTask = Task.Run(() => proc.StandardOutput.ReadToEnd());
+        var stderrTask = Task.Run(() => proc.StandardError.ReadToEnd());
+        if (!proc.WaitForExit(_timeoutSeconds * 1000))
+        {
+            TryKillProcessTree(proc);
+            return $"Error: Timeout ({_timeoutSeconds}s)";
+        }
+
+        var output = new StringBuilder();
+        output.Append(stdoutTask.GetAwaiter().GetResult());
+        output.Append(stderrTask.GetAwaiter().GetResult());
+        return NormalizeOutput(output.ToString());
+    }
+
+    static void TryKillProcessTree(Process proc)
+    {
+        try
+        {
+            proc.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+            /* ignore */
+        }
+    }
+
+    static string NormalizeOutput(string raw)
+    {
+        var text = raw.Trim();
+        if (string.IsNullOrEmpty(text))
+            return "(no output)";
+        return text.Length <= MaxOutputLength ? text : text[..MaxOutputLength];
     }
 }
