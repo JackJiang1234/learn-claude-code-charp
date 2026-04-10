@@ -6,5 +6,5 @@ public sealed class NoOpToolInvocationObserver : IToolInvocationObserver
 
     NoOpToolInvocationObserver() { }
 
-    public void OnToolInvocation(string command, string outputPreview) { }
+    public void OnToolInvocation(string toolName, string detail, string outputPreview) { }
 }

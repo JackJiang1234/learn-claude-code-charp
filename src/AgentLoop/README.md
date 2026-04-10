@@ -1,6 +1,6 @@
 # AgentLoop
 
-基于 Anthropic Messages API 的简易控制台「编码代理」示例：在终端输入自然语言，模型可反复调用 `bash` 工具在当前工作目录执行命令，直到给出最终文本回复。
+基于 Anthropic Messages API 的简易控制台「编码代理」示例（对齐 Python `s02_tool_use.py`）：在终端输入自然语言，模型可反复调用 `bash`、`read_file`、`write_file`、`edit_file` 等工具，直到给出最终文本回复。每次请求前会对消息列表做规范化（剥离内部字段、补齐缺失的 `tool_result`、合并连续同角色消息）。
 
 ## 前置条件
 
@@ -46,8 +46,9 @@ dotnet run --project src/AgentLoop/AgentLoop.csproj
 
 ## 行为说明
 
-- **系统提示**：告知模型当前目录，并引导使用 Windows `cmd` 风格检查与修改工作区（在 Windows 上实际通过 `cmd.exe /c` 执行）。
-- **工具**：仅注册 `bash` 一项，参数为 `command` 字符串。
+- **系统提示**：告知模型当前目录，并引导使用工具完成任务（`Use tools to solve tasks. Act, don't explain.`）。
+- **工具**：`bash`（`command`）、`read_file`（`path`，可选 `limit` 行数）、`write_file`（`path`、`content`）、`edit_file`（`path`、`old_text`、`new_text`，仅替换首次匹配片段）。
+- **文件路径**：相对路径均解析为工作区内路径；试图跳出工作区会返回错误字符串而非访问盘外文件。
 - **Shell**：Windows 使用 `cmd.exe /c`；非 Windows 使用 `/bin/sh -c`。
 - **命令执行**：单次最长等待 120 秒；合并标准输出与标准错误；输出过长会截断（见 `BashRunner` 中的常量）。
 - **安全**：部分危险片段会被拦截并返回错误信息，而非执行（见 `BashRunner.DangerousFragments`）。
@@ -57,7 +58,9 @@ dotnet run --project src/AgentLoop/AgentLoop.csproj
 | 路径 | 说明 |
 | --- | --- |
 | `Program.cs` | 配置加载、Anthropic 客户端构造、控制台主循环 |
-| `Agent/AgentLoopEngine.cs` | 与 API 的多轮对话及 `bash` 工具调用 |
+| `Agent/AgentLoopEngine.cs` | 与 API 的多轮对话及工具分发 |
+| `Agent/MessageNormalizer.cs` | 发送 API 前的消息规范化（对齐 Python `normalize_messages`） |
+| `Agent/WorkspaceFileOperations.cs` | 工作区内读/写/编辑文件 |
 | `Agent/LoopState.cs` | 消息历史与轮次状态 |
 | `Bash/BashRunner.cs` | 本地命令执行实现 |
 | `Domain/` | 配置与运行时异常类型 |

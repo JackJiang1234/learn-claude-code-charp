@@ -36,13 +36,14 @@ static async Task RunAsync()
     using var client = AnthropicClientFactory.Create(options);
 
     var systemPrompt =
-        $"You are a coding agent at {cwd}. "
-        + "Use Windows cmd to inspect and change the workspace. Act first, then report clearly.";
+        $"You are a coding agent at {cwd}. Use tools to solve tasks. Act, don't explain.";
 
     var bash = new BashRunner(cwd);
+    var workspace = new WorkspaceFileOperations(cwd);
     var engine = new AgentLoopEngine(
         client,
         bash,
+        workspace,
         options.ModelId,
         systemPrompt,
         new ConsoleToolInvocationObserver()
