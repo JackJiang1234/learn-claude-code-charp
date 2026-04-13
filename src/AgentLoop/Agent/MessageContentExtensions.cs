@@ -4,7 +4,7 @@ namespace AgentLoop.Agent;
 
 public static class MessageContentExtensions
 {
-    /// <summary>从用户或助手消息的 <see cref="MessageParamContent"/> 中提取纯文本（对齐 Python <c>extract_text</c>）。</summary>
+    /// <summary>Extracts plain text from user or assistant <see cref="MessageParamContent"/> (Python <c>extract_text</c>).</summary>
     public static string ExtractText(MessageParamContent content)
     {
         if (content.TryPickString(out var single))

@@ -50,11 +50,28 @@ public sealed class AgentLoopEngine
             return false;
         }
 
-        var results = ExecuteToolCalls(response.Content);
+        var (results, usedTodo) = ExecuteToolCalls(state, response.Content);
         if (results.Length == 0)
         {
             state.TransitionReason = null;
             return false;
+        }
+
+        if (usedTodo)
+            state.TodoPlanning.RoundsSinceUpdate = 0;
+        else
+        {
+            TodoSessionPlanner.NoteRoundWithoutTodoUpdate(state.TodoPlanning);
+            var reminder = TodoSessionPlanner.TryGetReminder(state.TodoPlanning);
+            if (reminder is not null)
+            {
+                var withReminder = new List<ContentBlockParam>(results.Length + 1)
+                {
+                    new TextBlockParam(reminder),
+                };
+                withReminder.AddRange(results);
+                results = withReminder.ToArray();
+            }
         }
 
         state.Messages.Add(new MessageParam { Role = Role.User, Content = new MessageParamContent(results) });
@@ -81,7 +98,7 @@ public sealed class AgentLoopEngine
         }
         catch (Exception ex)
         {
-            throw new AgentLoopException("调用 Anthropic Messages API 失败。", ex);
+            throw new AgentLoopException("Failed to call Anthropic Messages API.", ex);
         }
     }
 
@@ -98,15 +115,31 @@ public sealed class AgentLoopEngine
         );
     }
 
-    ContentBlockParam[] ExecuteToolCalls(IReadOnlyList<ContentBlock> responseContent)
+    (ContentBlockParam[] Results, bool UsedTodo) ExecuteToolCalls(
+        LoopState state,
+        IReadOnlyList<ContentBlock> responseContent
+    )
     {
         var list = new List<ContentBlockParam>();
+        var usedTodo = false;
         foreach (var block in responseContent)
         {
             if (!block.TryPickToolUse(out var tool))
                 continue;
 
-            var output = ExecuteSingleTool(tool);
+            if (tool.Name == "todo")
+                usedTodo = true;
+
+            string output;
+            try
+            {
+                output = ExecuteSingleTool(state, tool);
+            }
+            catch (Exception ex)
+            {
+                output = $"Error: {ex.Message}";
+            }
+
             var preview = output.Length <= ToolOutputPreviewLength ? output : output[..ToolOutputPreviewLength];
             _toolObserver.OnToolInvocation(tool.Name, DescribeToolInvocation(tool), preview);
 
@@ -114,10 +147,10 @@ public sealed class AgentLoopEngine
             list.Add(tr);
         }
 
-        return list.ToArray();
+        return (list.ToArray(), usedTodo);
     }
 
-    string ExecuteSingleTool(ToolUseBlock tool)
+    string ExecuteSingleTool(LoopState state, ToolUseBlock tool)
     {
         var input = tool.Input;
         return tool.Name switch
@@ -126,18 +159,27 @@ public sealed class AgentLoopEngine
             "read_file" => RunReadFileTool(input),
             "write_file" => RunWriteFileTool(input),
             "edit_file" => RunEditFileTool(input),
+            "todo" => RunTodoTool(state.TodoPlanning, input),
             _ => $"Unknown tool: {tool.Name}",
         };
+    }
+
+    static string RunTodoTool(TodoPlanningState todoState, IReadOnlyDictionary<string, JsonElement> input)
+    {
+        if (!input.TryGetValue("items", out var itemsEl))
+            return "Error: todo is missing items.";
+
+        return TodoSessionPlanner.Update(todoState, itemsEl);
     }
 
     string RunBashTool(IReadOnlyDictionary<string, JsonElement> input)
     {
         if (!input.TryGetValue("command", out var cmdEl))
-            throw new AgentLoopException("bash 工具调用缺少 command 字段。");
+            throw new AgentLoopException("bash tool call is missing the command field.");
 
         var command = cmdEl.GetString();
         if (string.IsNullOrEmpty(command))
-            throw new AgentLoopException("bash 工具的 command 无效。");
+            throw new AgentLoopException("bash tool command is invalid.");
 
         return _bash.Run(command);
     }
@@ -145,7 +187,7 @@ public sealed class AgentLoopEngine
     string RunReadFileTool(IReadOnlyDictionary<string, JsonElement> input)
     {
         if (!TryGetRequiredString(input, "path", out var path))
-            return "Error: read_file 缺少 path。";
+            return "Error: read_file is missing path.";
 
         var limit = TryGetOptionalPositiveInt(input, "limit");
         return _workspace.ReadFile(path, limit);
@@ -154,10 +196,10 @@ public sealed class AgentLoopEngine
     string RunWriteFileTool(IReadOnlyDictionary<string, JsonElement> input)
     {
         if (!TryGetRequiredString(input, "path", out var path))
-            return "Error: write_file 缺少 path。";
+            return "Error: write_file is missing path.";
 
         if (!TryGetStringContent(input, "content", out var content))
-            return "Error: write_file 缺少 content。";
+            return "Error: write_file is missing content.";
 
         return _workspace.WriteFile(path, content);
     }
@@ -165,13 +207,13 @@ public sealed class AgentLoopEngine
     string RunEditFileTool(IReadOnlyDictionary<string, JsonElement> input)
     {
         if (!TryGetRequiredString(input, "path", out var path))
-            return "Error: edit_file 缺少 path。";
+            return "Error: edit_file is missing path.";
 
         if (!TryGetRequiredString(input, "old_text", out var oldText))
-            return "Error: edit_file 缺少 old_text。";
+            return "Error: edit_file is missing old_text.";
 
         if (!TryGetRequiredString(input, "new_text", out var newText))
-            return "Error: edit_file 缺少 new_text。";
+            return "Error: edit_file is missing new_text.";
 
         return _workspace.EditFile(path, oldText, newText);
     }
@@ -184,6 +226,7 @@ public sealed class AgentLoopEngine
             "read_file" => GetOptionalString(tool.Input, "path") ?? "",
             "write_file" => GetOptionalString(tool.Input, "path") ?? "",
             "edit_file" => GetOptionalString(tool.Input, "path") ?? "",
+            "todo" => "todo",
             _ => "",
         };
     }

@@ -1,6 +1,6 @@
 namespace AgentLoop.Domain;
 
-/// <summary>环境变量或启动配置无效时抛出。</summary>
+/// <summary>Thrown when environment or startup configuration is invalid.</summary>
 public sealed class AgentConfigurationException : AgentLoopException
 {
     public AgentConfigurationException(string message)

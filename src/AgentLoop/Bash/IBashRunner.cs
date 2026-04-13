@@ -1,8 +1,8 @@
 namespace AgentLoop.Bash;
 
-/// <summary>在当前工作目录执行 shell 命令（与 Python 版 <c>run_bash</c> 对齐）。</summary>
+/// <summary>Runs a shell command in the current working directory (Python <c>run_bash</c>).</summary>
 public interface IBashRunner
 {
-    /// <param name="command">整条命令字符串，在 Windows 下通过 <c>cmd.exe /c</c> 执行。</param>
+    /// <param name="command">Full command string; on Windows runs via <c>cmd.exe /c</c>.</param>
     string Run(string command);
 }

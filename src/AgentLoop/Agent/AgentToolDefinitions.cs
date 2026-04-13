@@ -3,15 +3,15 @@ using Anthropic.Models.Messages;
 
 namespace AgentLoop.Agent;
 
-// 与 Python s02 对齐：read_file 可并行；write_file / edit_file 需串行（当前实现为顺序执行）。
+// Matches Python s02: read_file may be parallel; write_file/edit_file are sequential (executed in order here).
 internal static class AgentToolDefinitions
 {
-    /// <summary>注册到 Messages API 的工具列表（SDK 要求 <see cref="ToolUnion"/>）。</summary>
+    /// <summary>Tool list for the Messages API (SDK expects <see cref="ToolUnion"/>).</summary>
     public static IReadOnlyList<ToolUnion> CreateToolUnions() =>
         CreateTools().Select(static t => (ToolUnion)t).ToArray();
 
     static Tool[] CreateTools() =>
-        [CreateBashTool(), CreateReadFileTool(), CreateWriteFileTool(), CreateEditFileTool()];
+        [CreateBashTool(), CreateReadFileTool(), CreateWriteFileTool(), CreateEditFileTool(), CreateTodoTool()];
 
     static Tool CreateBashTool() =>
         new()
@@ -82,6 +82,46 @@ internal static class AgentToolDefinitions
                         new_text = new { type = "string" },
                     },
                     required = new[] { "path", "old_text", "new_text" },
+                }
+            ),
+        };
+
+    static Tool CreateTodoTool() =>
+        new()
+        {
+            Name = "todo",
+            Description = "Rewrite the current session plan for multi-step work.",
+            InputSchema = ToInputSchema(
+                new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        items = new
+                        {
+                            type = "array",
+                            items = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    content = new { type = "string" },
+                                    status = new
+                                    {
+                                        type = "string",
+                                        @enum = new[] { "pending", "in_progress", "completed" },
+                                    },
+                                    activeForm = new
+                                    {
+                                        type = "string",
+                                        description = "Optional present-continuous label.",
+                                    },
+                                },
+                                required = new[] { "content", "status" },
+                            },
+                        },
+                    },
+                    required = new[] { "items" },
                 }
             ),
         };

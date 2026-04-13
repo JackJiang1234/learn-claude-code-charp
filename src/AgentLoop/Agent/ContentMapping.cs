@@ -38,7 +38,7 @@ internal static class ContentMapping
             }
 
             throw new AgentLoopException(
-                "暂不支持的助手内容块类型，请扩展 ContentMapping.MapAssistantBlocksToParams。"
+                "Unsupported assistant content block type; extend ContentMapping.MapAssistantBlocksToParams."
             );
         }
 

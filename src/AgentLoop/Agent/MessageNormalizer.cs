@@ -3,7 +3,7 @@ using AgentLoop.Domain;
 
 namespace AgentLoop.Agent;
 
-/// <summary>在每次调用 Messages API 前规范化消息列表，对齐 Python <c>normalize_messages</c>。</summary>
+/// <summary>Normalizes messages before each Messages API call (Python <c>normalize_messages</c>).</summary>
 public static class MessageNormalizer
 {
     public static List<MessageParam> NormalizeForApi(IReadOnlyList<MessageParam> messages)
@@ -155,7 +155,7 @@ public static class MessageNormalizer
             return new RedactedThinkingBlockParam { Data = red.Data };
 
         throw new AgentLoopException(
-            "消息规范化遇到不支持的内容块类型，请扩展 MessageNormalizer.CloneBlock。"
+            "Message normalization encountered an unsupported content block type; extend MessageNormalizer.CloneBlock."
         );
     }
 }

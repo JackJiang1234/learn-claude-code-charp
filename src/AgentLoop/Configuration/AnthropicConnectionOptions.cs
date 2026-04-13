@@ -3,7 +3,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace AgentLoop.Configuration;
 
-/// <summary>从配置与环境变量解析出的 Anthropic API 连接参数。</summary>
+/// <summary>Anthropic API connection options from configuration and environment variables.</summary>
 public sealed record AnthropicConnectionOptions(string ModelId, string? BaseUrl, string? AuthToken)
 {
     public static AnthropicConnectionOptions FromConfiguration(IConfiguration configuration)
@@ -13,8 +13,8 @@ public sealed record AnthropicConnectionOptions(string ModelId, string? BaseUrl,
         if (string.IsNullOrWhiteSpace(modelId))
         {
             throw new AgentConfigurationException(
-                "缺少 Anthropic:ModelId（请在 appsettings.json 的 Anthropic 节中设置，"
-                    + "或使用环境变量 Anthropic__ModelId / MODEL_ID 覆盖）。"
+                "Missing Anthropic:ModelId. Set it in appsettings.json under the Anthropic section, "
+                    + "or override via environment variables Anthropic__ModelId or MODEL_ID."
             );
         }
 

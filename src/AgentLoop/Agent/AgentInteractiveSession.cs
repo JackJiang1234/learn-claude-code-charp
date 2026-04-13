@@ -3,10 +3,11 @@ using AgentLoop.Domain;
 
 namespace AgentLoop.Agent;
 
-/// <summary>控制台交互：读取用户输入并驱动 <see cref="AgentLoopEngine"/>。</summary>
+/// <summary>Console REPL: reads user input and drives <see cref="AgentLoopEngine"/>.</summary>
 public sealed class AgentInteractiveSession
 {
     private readonly AgentLoopEngine _engine;
+    private readonly TodoPlanningState _sessionTodoPlanning = new();
 
     public AgentInteractiveSession(AgentLoopEngine engine)
     {
@@ -35,7 +36,7 @@ public sealed class AgentInteractiveSession
 
             history.Add(new MessageParam { Role = Role.User, Content = trimmed });
 
-            var state = new LoopState(history);
+            var state = new LoopState(history, _sessionTodoPlanning);
             try
             {
                 await _engine.RunAgentLoopAsync(state, cancellationToken).ConfigureAwait(false);

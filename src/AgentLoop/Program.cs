@@ -36,7 +36,12 @@ static async Task RunAsync()
     using var client = AnthropicClientFactory.Create(options);
 
     var systemPrompt =
-        $"You are a coding agent at {cwd}. Use tools to solve tasks. Act, don't explain.";
+        $"""
+        You are a coding agent at {cwd}.
+        Use the todo tool for multi-step work.
+        Keep exactly one step in_progress when a task has multiple steps.
+        Refresh the plan as work advances. Prefer tools over prose.
+        """;
 
     var bash = new BashRunner(cwd);
     var workspace = new WorkspaceFileOperations(cwd);

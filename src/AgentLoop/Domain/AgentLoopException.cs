@@ -1,6 +1,6 @@
 namespace AgentLoop.Domain;
 
-/// <summary>代理循环相关错误的基类。</summary>
+/// <summary>Base type for agent loop errors.</summary>
 public class AgentLoopException : Exception
 {
     public AgentLoopException(string message)

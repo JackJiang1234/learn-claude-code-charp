@@ -1,6 +1,6 @@
 namespace AgentLoop.Agent;
 
-/// <summary>将路径限制在工作区根目录下，行为对齐 Python <c>safe_path</c> 与文件工具。</summary>
+/// <summary>Resolves paths under the workspace root (Python <c>safe_path</c> and file tools).</summary>
 public sealed class WorkspaceFileOperations : IWorkspaceFileOperations
 {
     public const int MaxReadChars = 50_000;

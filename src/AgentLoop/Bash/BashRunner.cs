@@ -81,7 +81,7 @@ public sealed class BashRunner : IBashRunner
 
     string RunProcessAndCollectOutput(ProcessStartInfo psi)
     {
-        using var proc = Process.Start(psi) ?? throw new AgentLoopException("无法启动 shell 进程。");
+        using var proc = Process.Start(psi) ?? throw new AgentLoopException("Failed to start shell process.");
 
         var stdoutTask = Task.Run(() => proc.StandardOutput.ReadToEnd());
         var stderrTask = Task.Run(() => proc.StandardError.ReadToEnd());
