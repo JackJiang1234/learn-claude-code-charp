@@ -3,15 +3,33 @@ using Anthropic.Models.Messages;
 
 namespace AgentLoop.Agent;
 
-// Matches Python s02: read_file may be parallel; write_file/edit_file are sequential (executed in order here).
+// Matches Python s04: parent has todo + task; child has base file/bash tools only (no recursion).
 internal static class AgentToolDefinitions
 {
-    /// <summary>Tool list for the Messages API (SDK expects <see cref="ToolUnion"/>).</summary>
-    public static IReadOnlyList<ToolUnion> CreateToolUnions() =>
-        CreateTools().Select(static t => (ToolUnion)t).ToArray();
+    /// <summary>Parent agent: base tools + todo + <c>task</c> (spawn subagent).</summary>
+    public static IReadOnlyList<ToolUnion> CreateParentToolUnions() =>
+        CreateParentTools().Select(static t => (ToolUnion)t).ToArray();
 
-    static Tool[] CreateTools() =>
-        [CreateBashTool(), CreateReadFileTool(), CreateWriteFileTool(), CreateEditFileTool(), CreateTodoTool()];
+    /// <summary>Subagent: fresh context, same filesystem, no <c>task</c> or <c>todo</c>.</summary>
+    public static IReadOnlyList<ToolUnion> CreateChildToolUnions() =>
+        CreateChildTools().Select(static t => (ToolUnion)t).ToArray();
+
+    internal static string[] ParentToolNames() => CreateParentTools().Select(static t => t.Name).ToArray();
+
+    internal static string[] ChildToolNames() => CreateChildTools().Select(static t => t.Name).ToArray();
+
+    static Tool[] CreateParentTools() =>
+    [
+        CreateBashTool(),
+        CreateReadFileTool(),
+        CreateWriteFileTool(),
+        CreateEditFileTool(),
+        CreateTodoTool(),
+        CreateTaskTool(),
+    ];
+
+    static Tool[] CreateChildTools() =>
+        [CreateBashTool(), CreateReadFileTool(), CreateWriteFileTool(), CreateEditFileTool()];
 
     static Tool CreateBashTool() =>
         new()
@@ -122,6 +140,30 @@ internal static class AgentToolDefinitions
                         },
                     },
                     required = new[] { "items" },
+                }
+            ),
+        };
+
+    static Tool CreateTaskTool() =>
+        new()
+        {
+            Name = "task",
+            Description =
+                "Spawn a subagent with fresh context. It shares the filesystem but not conversation history.",
+            InputSchema = ToInputSchema(
+                new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        prompt = new { type = "string" },
+                        description = new
+                        {
+                            type = "string",
+                            description = "Short description of the task.",
+                        },
+                    },
+                    required = new[] { "prompt" },
                 }
             ),
         };

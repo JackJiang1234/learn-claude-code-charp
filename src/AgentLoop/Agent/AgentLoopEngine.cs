@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Anthropic;
 using Anthropic.Models.Messages;
@@ -8,7 +9,9 @@ namespace AgentLoop.Agent;
 
 public sealed class AgentLoopEngine
 {
-    private const int ToolOutputPreviewLength = 200;
+    const int ToolOutputPreviewLength = 200;
+    const int MaxSubagentTurns = 30;
+    const int MaxToolOutputLength = 50000;
 
     private readonly AnthropicClient _client;
     private readonly IBashRunner _bash;
@@ -16,6 +19,7 @@ public sealed class AgentLoopEngine
     private readonly IToolInvocationObserver _toolObserver;
     private readonly string _modelId;
     private readonly string _systemPrompt;
+    private readonly string _subagentSystemPrompt;
 
     public AgentLoopEngine(
         AnthropicClient client,
@@ -23,6 +27,7 @@ public sealed class AgentLoopEngine
         IWorkspaceFileOperations workspace,
         string modelId,
         string systemPrompt,
+        string subagentSystemPrompt,
         IToolInvocationObserver? toolObserver = null
     )
     {
@@ -31,6 +36,7 @@ public sealed class AgentLoopEngine
         _workspace = workspace;
         _modelId = modelId;
         _systemPrompt = systemPrompt;
+        _subagentSystemPrompt = subagentSystemPrompt;
         _toolObserver = toolObserver ?? NoOpToolInvocationObserver.Instance;
     }
 
@@ -41,7 +47,13 @@ public sealed class AgentLoopEngine
 
     public async Task<bool> RunOneTurnAsync(LoopState state, CancellationToken cancellationToken = default)
     {
-        var response = await CallMessagesApiAsync(state, cancellationToken).ConfigureAwait(false);
+        var response = await CallMessagesApiAsync(
+                state,
+                _systemPrompt,
+                AgentToolDefinitions.CreateParentToolUnions(),
+                cancellationToken
+            )
+            .ConfigureAwait(false);
         AppendAssistantMessage(state, response);
 
         if (response.StopReason is not { } sr || sr.Value() != StopReason.ToolUse)
@@ -50,7 +62,8 @@ public sealed class AgentLoopEngine
             return false;
         }
 
-        var (results, usedTodo) = ExecuteToolCalls(state, response.Content);
+        var (results, usedTodo) = await ExecuteParentToolCallsAsync(state, response.Content, cancellationToken)
+            .ConfigureAwait(false);
         if (results.Length == 0)
         {
             state.TransitionReason = null;
@@ -65,10 +78,7 @@ public sealed class AgentLoopEngine
             var reminder = TodoSessionPlanner.TryGetReminder(state.TodoPlanning);
             if (reminder is not null)
             {
-                var withReminder = new List<ContentBlockParam>(results.Length + 1)
-                {
-                    new TextBlockParam(reminder),
-                };
+                var withReminder = new List<ContentBlockParam>(results.Length + 1) { new TextBlockParam(reminder), };
                 withReminder.AddRange(results);
                 results = withReminder.ToArray();
             }
@@ -80,16 +90,21 @@ public sealed class AgentLoopEngine
         return true;
     }
 
-    async Task<Message> CallMessagesApiAsync(LoopState state, CancellationToken cancellationToken)
+    async Task<Message> CallMessagesApiAsync(
+        LoopState state,
+        string systemPrompt,
+        IReadOnlyList<ToolUnion> tools,
+        CancellationToken cancellationToken
+    )
     {
         var normalized = MessageNormalizer.NormalizeForApi(state.Messages);
         var request = new MessageCreateParams
         {
             Model = _modelId,
             MaxTokens = 8000,
-            System = _systemPrompt,
+            System = systemPrompt,
             Messages = normalized,
-            Tools = AgentToolDefinitions.CreateToolUnions(),
+            Tools = tools,
         };
 
         try
@@ -115,9 +130,10 @@ public sealed class AgentLoopEngine
         );
     }
 
-    (ContentBlockParam[] Results, bool UsedTodo) ExecuteToolCalls(
+    async Task<(ContentBlockParam[] Results, bool UsedTodo)> ExecuteParentToolCallsAsync(
         LoopState state,
-        IReadOnlyList<ContentBlock> responseContent
+        IReadOnlyList<ContentBlock> responseContent,
+        CancellationToken cancellationToken
     )
     {
         var list = new List<ContentBlockParam>();
@@ -133,13 +149,17 @@ public sealed class AgentLoopEngine
             string output;
             try
             {
-                output = ExecuteSingleTool(state, tool);
+                if (tool.Name == "task")
+                    output = await RunTaskToolAsync(tool.Input, cancellationToken).ConfigureAwait(false);
+                else
+                    output = ExecuteParentTool(state, tool);
             }
             catch (Exception ex)
             {
                 output = $"Error: {ex.Message}";
             }
 
+            output = TruncateOutput(output);
             var preview = output.Length <= ToolOutputPreviewLength ? output : output[..ToolOutputPreviewLength];
             _toolObserver.OnToolInvocation(tool.Name, DescribeToolInvocation(tool), preview);
 
@@ -150,16 +170,117 @@ public sealed class AgentLoopEngine
         return (list.ToArray(), usedTodo);
     }
 
-    string ExecuteSingleTool(LoopState state, ToolUseBlock tool)
+    async Task<string> RunTaskToolAsync(IReadOnlyDictionary<string, JsonElement> input, CancellationToken cancellationToken)
     {
-        var input = tool.Input;
+        if (!input.TryGetValue("prompt", out var promptEl) || promptEl.ValueKind != JsonValueKind.String)
+            return "Error: task is missing prompt.";
+
+        var prompt = promptEl.GetString();
+        if (string.IsNullOrWhiteSpace(prompt))
+            return "Error: task is missing prompt.";
+
+        return await RunSubagentAsync(prompt.Trim(), cancellationToken).ConfigureAwait(false);
+    }
+
+    async Task<string> RunSubagentAsync(string prompt, CancellationToken cancellationToken)
+    {
+        var subMessages = new List<MessageParam> { new() { Role = Role.User, Content = prompt } };
+        var subState = new LoopState(subMessages, new TodoPlanningState());
+
+        for (var i = 0; i < MaxSubagentTurns; i++)
+        {
+            var response = await CallMessagesApiAsync(
+                    subState,
+                    _subagentSystemPrompt,
+                    AgentToolDefinitions.CreateChildToolUnions(),
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
+
+            AppendAssistantMessage(subState, response);
+
+            if (response.StopReason is not { } sr || sr.Value() != StopReason.ToolUse)
+            {
+                var text = ExtractTextFromMessage(response);
+                return text.Length > 0 ? text : "(no summary)";
+            }
+
+            var results = ExecuteChildToolCalls(response.Content);
+            if (results.Length == 0)
+                return "(no summary)";
+
+            subState.Messages.Add(new MessageParam { Role = Role.User, Content = new MessageParamContent(results) });
+            subState.TurnCount++;
+        }
+
+        return "(no summary)";
+    }
+
+    ContentBlockParam[] ExecuteChildToolCalls(IReadOnlyList<ContentBlock> responseContent)
+    {
+        var list = new List<ContentBlockParam>();
+        foreach (var block in responseContent)
+        {
+            if (!block.TryPickToolUse(out var tool))
+                continue;
+
+            string output;
+            try
+            {
+                output = ExecuteChildTool(tool);
+            }
+            catch (Exception ex)
+            {
+                output = $"Error: {ex.Message}";
+            }
+
+            output = TruncateOutput(output);
+            var preview = output.Length <= ToolOutputPreviewLength ? output : output[..ToolOutputPreviewLength];
+            _toolObserver.OnToolInvocation(tool.Name, DescribeToolInvocation(tool), preview);
+
+            var tr = new ToolResultBlockParam(tool.ID) { Content = new ToolResultBlockParamContent(output) };
+            list.Add(tr);
+        }
+
+        return list.ToArray();
+    }
+
+    static string TruncateOutput(string output) =>
+        output.Length <= MaxToolOutputLength ? output : output[..MaxToolOutputLength];
+
+    static string ExtractTextFromMessage(Message response)
+    {
+        var sb = new StringBuilder();
+        foreach (var block in response.Content)
+        {
+            if (block.TryPickText(out var text))
+                sb.Append(text.Text);
+        }
+
+        return sb.ToString().Trim();
+    }
+
+    string ExecuteParentTool(LoopState state, ToolUseBlock tool)
+    {
         return tool.Name switch
         {
-            "bash" => RunBashTool(input),
-            "read_file" => RunReadFileTool(input),
-            "write_file" => RunWriteFileTool(input),
-            "edit_file" => RunEditFileTool(input),
-            "todo" => RunTodoTool(state.TodoPlanning, input),
+            "bash" => RunBashTool(tool.Input),
+            "read_file" => RunReadFileTool(tool.Input),
+            "write_file" => RunWriteFileTool(tool.Input),
+            "edit_file" => RunEditFileTool(tool.Input),
+            "todo" => RunTodoTool(state.TodoPlanning, tool.Input),
+            _ => $"Unknown tool: {tool.Name}",
+        };
+    }
+
+    string ExecuteChildTool(ToolUseBlock tool)
+    {
+        return tool.Name switch
+        {
+            "bash" => RunBashTool(tool.Input),
+            "read_file" => RunReadFileTool(tool.Input),
+            "write_file" => RunWriteFileTool(tool.Input),
+            "edit_file" => RunEditFileTool(tool.Input),
             _ => $"Unknown tool: {tool.Name}",
         };
     }
@@ -227,8 +348,22 @@ public sealed class AgentLoopEngine
             "write_file" => GetOptionalString(tool.Input, "path") ?? "",
             "edit_file" => GetOptionalString(tool.Input, "path") ?? "",
             "todo" => "todo",
+            "task" => DescribeTaskInvocation(tool.Input),
             _ => "",
         };
+    }
+
+    static string DescribeTaskInvocation(IReadOnlyDictionary<string, JsonElement> input)
+    {
+        var desc = GetOptionalString(input, "description") ?? "subtask";
+        var prompt = "";
+        if (input.TryGetValue("prompt", out var p) && p.ValueKind == JsonValueKind.String)
+            prompt = p.GetString() ?? "";
+
+        if (prompt.Length > 80)
+            prompt = prompt[..80];
+
+        return $"{desc}: {prompt}";
     }
 
     static bool TryGetRequiredString(

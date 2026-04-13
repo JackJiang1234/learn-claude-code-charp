@@ -38,9 +38,16 @@ static async Task RunAsync()
     var systemPrompt =
         $"""
         You are a coding agent at {cwd}.
+        Use the task tool to delegate exploration or subtasks to a subagent with isolated context.
         Use the todo tool for multi-step work.
         Keep exactly one step in_progress when a task has multiple steps.
         Refresh the plan as work advances. Prefer tools over prose.
+        """;
+
+    var subagentSystemPrompt =
+        $"""
+        You are a coding subagent at {cwd}.
+        Complete the given task, then summarize your findings.
         """;
 
     var bash = new BashRunner(cwd);
@@ -51,6 +58,7 @@ static async Task RunAsync()
         workspace,
         options.ModelId,
         systemPrompt,
+        subagentSystemPrompt,
         new ConsoleToolInvocationObserver()
     );
 
